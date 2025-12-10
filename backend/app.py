@@ -3,7 +3,8 @@ import sys
 import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
+from bson import ObjectId
 from dotenv import load_dotenv
 
 # --- CONFIGURATION ---
@@ -30,12 +31,28 @@ try:
     clients_collection = db['clients']
     contacts_collection = db['contacts']
     subscribers_collection = db['subscribers']
+    counter_collection = db['counters']  # For auto-increment IDs
     
     print("✅ Connected to MongoDB Atlas Successfully!")
 
 except Exception as e:
     print(f"❌ CRITICAL DATABASE ERROR: {e}")
     sys.exit(1)
+
+# Helper function to get next auto-increment ID
+def get_next_id(collection_name):
+    # Atomically increment and return the new sequence value
+    counter = counter_collection.find_one_and_update(
+        {'_id': collection_name},
+        {'$inc': {'sequence_value': 1}},
+        return_document=ReturnDocument.AFTER,
+        upsert=True
+    )
+    if not counter:
+        # initialize if somehow missing
+        counter_collection.update_one({'_id': collection_name}, {'$set': {'sequence_value': 1}}, upsert=True)
+        return 1
+    return int(counter.get('sequence_value', 1))
 
 @app.route('/')
 def home():
@@ -95,12 +112,18 @@ def add_project():
             # Create the data URL (e.g., "data:image/jpeg;base64,sd23...")
             image_url = f"data:{file.content_type};base64,{encoded_string}"
 
+            # Generate auto-increment ID
+            project_id = get_next_id('projects')
+            
             project_data = {
+                "id": project_id,
                 "name": name,
                 "description": description,
-                "image_url": image_url 
+                "image_url": image_url
             }
-            projects_collection.insert_one(project_data)
+            result = projects_collection.insert_one(project_data)
+            # include inserted id as string to avoid ObjectId serialization errors
+            project_data["_id"] = str(result.inserted_id)
             return jsonify({"message": "Project created", "data": project_data}), 201
 
     except Exception as e:
@@ -126,16 +149,22 @@ def add_client():
             encoded_string = base64.b64encode(file.read()).decode('utf-8')
             image_url = f"data:{file.content_type};base64,{encoded_string}"
 
+            # Generate auto-increment ID
+            client_id = get_next_id('clients')
+            
             client_data = {
+                "id": client_id,
                 "name": name,
                 "description": description,
                 "designation": designation,
                 "image_url": image_url
             }
-            clients_collection.insert_one(client_data)
+            result = clients_collection.insert_one(client_data)
+            client_data["_id"] = str(result.inserted_id)
             return jsonify({"message": "Client added", "data": client_data}), 201
 
     except Exception as e:
+        print(e)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/contacts', methods=['GET'])
